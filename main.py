@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+
 """
 VixSrc M3U8 Extractor v5 - Ottimizzato per Smart TV Samsung (Tizen) & Telecomando
-Modificato per l'hosting online su Render.com
+Con supporto proxy automatico da GitHub
 """
 
 import os
@@ -12,11 +13,129 @@ import asyncio
 import requests
 from urllib.parse import urlparse, parse_qs, urlencode
 from flask import Flask, request, jsonify, render_template_string
+import random
+import time
 
 app = Flask(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
+# URL per scaricare la lista proxy aggiornata
+PROXY_LIST_URL = "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/http.txt"
+
+def fetch_proxies_from_github():
+    """Scarica la lista proxy da GitHub"""
+    try:
+        print("[*] Scaricando lista proxy da GitHub...")
+        response = requests.get(PROXY_LIST_URL, timeout=10)
+        if response.status_code == 200:
+            proxies = [line.strip() for line in response.text.split('\n') if line.strip()]
+            print(f"[+] Scaricati {len(proxies)} proxy")
+            return proxies
+        else:
+            print(f"[-] Errore scaricamento proxy: {response.status_code}")
+            return []
+    except Exception as e:
+        print(f"[-] Errore scaricamento proxy: {e}")
+        return []
+
+def test_proxy(proxy, test_url="http://httpbin.org/ip", timeout=5):
+    """Testa se un proxy è funzionante e veloce"""
+    try:
+        start_time = time.time()
+        proxies = {
+            "http": f"http://{proxy}",
+            "https": f"http://{proxy}"  # Usa HTTP anche per HTTPS per compatibilità
+        }
+        response = requests.get(test_url, proxies=proxies, timeout=timeout)
+        elapsed = time.time() - start_time
+        
+        if response.status_code == 200:
+            # Pulisci l'IP di risposta per mostrare che il proxy funziona
+            try:
+                ip_data = response.json()
+                print(f"   ✅ Proxy {proxy} funzionante - {elapsed:.2f}s - IP: {ip_data.get('origin', 'N/A')}")
+            except:
+                print(f"   ✅ Proxy {proxy} funzionante - {elapsed:.2f}s")
+            return True, elapsed
+        return False, None
+    except Exception as e:
+        # Troppo verboso, commentiamo
+        return False, None
+
+def get_best_proxy(proxies, max_test=20):
+    """Trova il proxy più veloce tra quelli disponibili"""
+    if not proxies:
+        print("[-] Nessun proxy disponibile")
+        return None
+    
+    print(f"[*] Testando {min(max_test, len(proxies))} proxy...")
+    
+    working_proxies = []
+    
+    # Testa solo i primi max_test proxy per velocità
+    for proxy in proxies[:max_test]:
+        is_working, latency = test_proxy(proxy)
+        if is_working:
+            working_proxies.append((proxy, latency))
+    
+    if not working_proxies:
+        print("[-] Nessun proxy funzionante trovato")
+        return None
+    
+    # Ordina per latenza (più veloce prima)
+    working_proxies.sort(key=lambda x: x[1])
+    
+    best_proxy = working_proxies[0][0]
+    best_latency = working_proxies[0][1]
+    
+    print(f"[+] Proxy selezionato: {best_proxy} (latenza: {best_latency:.2f}s)")
+    
+    if len(working_proxies) > 1:
+        print(f"[*] Altri proxy disponibili: {len(working_proxies)-1}")
+    
+    return best_proxy
+
+# Cache per i proxy
+cached_proxies = None
+cached_proxy_timestamp = 0
+PROXY_CACHE_DURATION = 300  # 5 minuti
+
+def get_working_proxy():
+    """Ottiene un proxy funzionante, con cache per non scaricare sempre"""
+    global cached_proxies, cached_proxy_timestamp
+    
+    current_time = time.time()
+    
+    # Se la cache è ancora valida, usa il proxy cachato
+    if cached_proxies and (current_time - cached_proxy_timestamp) < PROXY_CACHE_DURATION:
+        # Prendi il primo della lista
+        return cached_proxies[0] if cached_proxies else None
+    
+    # Scarica nuova lista proxy
+    all_proxies = fetch_proxies_from_github()
+    
+    if not all_proxies:
+        # Fallback: usa alcuni proxy hardcoded che potrebbero funzionare
+        print("[*] Usando proxy hardcoded come fallback")
+        all_proxies = [
+            "34.43.46.91:80",
+            "159.65.221.25:80",
+            "142.93.202.130:3128",
+        ]
+    
+    # Mescola per evitare di testare sempre gli stessi
+    random.shuffle(all_proxies)
+    
+    # Trova il proxy migliore
+    best_proxy = get_best_proxy(all_proxies, max_test=30)
+    
+    if best_proxy:
+        cached_proxies = [best_proxy]
+        cached_proxy_timestamp = current_time
+        return best_proxy
+    
+    return None
 
 async def extract_playlist_url(movie_url):
     """
@@ -27,21 +146,63 @@ async def extract_playlist_url(movie_url):
     
     from playwright.async_api import async_playwright
     
+    # Ottieni un proxy funzionante
+    proxy_url = get_working_proxy()
+    proxy_config = None
+    
+    if proxy_url:
+        # Estrai IP e porta dal proxy
+        proxy_parts = proxy_url.replace("http://", "").replace("https://", "").split(":")
+        if len(proxy_parts) == 2:
+            proxy_config = {
+                "server": f"http://{proxy_parts[0]}:{proxy_parts[1]}"
+            }
+            print(f"[*] Utilizzo proxy: {proxy_config['server']}")
+    
     async with async_playwright() as p:
-        # Aggiunti argomenti di camuffamento per bypassare i blocchi sui server cloud
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
+        # Configura il browser con proxy se disponibile
+        launch_args = {
+            'headless': True,
+            'args': [
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
-                '--disable-setuid-sandbox'
+                '--disable-setuid-sandbox',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
             ]
-        )
+        }
+        
+        # Aggiungi proxy se disponibile
+        if proxy_config:
+            launch_args['proxy'] = proxy_config
+        
+        browser = await p.chromium.launch(**launch_args)
         context = await browser.new_context(
             user_agent=USER_AGENT,
-            viewport={"width": 1280, "height": 720}
+            viewport={"width": 1280, "height": 720},
+            bypass_csp=True
         )
         page = await context.new_page()
+        
+        # Aggiungi script per bypassare i controlli anti-bot
+        await page.add_init_script("""
+            // Rimuovi tracce di headless
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            });
+            
+            // Simula comportamento umano
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5]
+            });
+            
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['it-IT', 'it', 'en-US', 'en']
+            });
+        """)
         
         # Intercetta TUTTE le richieste
         async def handle_request(request):
@@ -73,14 +234,24 @@ async def extract_playlist_url(movie_url):
         print("[*] In attesa di richieste a /playlist/...")
         
         try:
-            await page.goto(movie_url, wait_until="domcontentloaded", timeout=30000)
+            # Vai alla pagina con timeout più lungo e aspetta il caricamento
+            await page.goto(movie_url, wait_until="domcontentloaded", timeout=60000)
+            
             # Aspetta per dare tempo alla pagina di caricare i player asincroni
-            for i in range(15):
+            for i in range(20):
                 await asyncio.sleep(1)
                 if playlist_urls:
                     print(f"   [+] Già trovati {len(playlist_urls)} link playlist")
+                    break
+                    
+            # Prova a fare scroll per attivare il player
+            await page.evaluate("window.scrollBy(0, 500)")
+            await asyncio.sleep(2)
+            await page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(2)
+            
         except Exception as e:
-            print(f"[-] Timeout o blocco durante il caricamento, procedo comunque...")
+            print(f"[-] Timeout o blocco durante il caricamento: {e}")
             await asyncio.sleep(5)
         
         # Prova anche con evaluate per estrarre direttamente dal JS
@@ -89,6 +260,8 @@ async def extract_playlist_url(movie_url):
             js_result = await page.evaluate("""
                 () => {
                     const results = [];
+                    
+                    // Cerca in tutti gli script
                     document.querySelectorAll('script').forEach(s => {
                         const text = s.textContent || '';
                         const matches = text.match(/https?:\\/\\/[^'"\\s]*\\/playlist\\/[^'"\\s]*/g);
@@ -96,15 +269,30 @@ async def extract_playlist_url(movie_url):
                         const matches2 = text.match(/vixsrc\\.to\\/playlist\\/[^'"\\s,&]*/g);
                         if (matches2) results.push(...matches2.map(u => 'https://' + u));
                     });
+                    
+                    // Cerca negli attributi degli elementi
                     const all = document.querySelectorAll('*');
                     all.forEach(el => {
                         if (el.src && el.src.includes('/playlist/')) results.push(el.src);
                         if (el.href && el.href.includes('/playlist/')) results.push(el.href);
                         if (el.data && typeof el.data === 'string' && el.data.includes('/playlist/')) results.push(el.data);
                     });
+                    
+                    // Cerca nel localStorage e sessionStorage
+                    try {
+                        for (let key in localStorage) {
+                            const val = localStorage[key] || '';
+                            if (val.includes('/playlist/')) {
+                                const matches = val.match(/https?:\\/\\/[^'"\\s]*\\/playlist\\/[^'"\\s]*/g);
+                                if (matches) results.push(...matches);
+                            }
+                        }
+                    } catch(e) {}
+                    
                     return [...new Set(results)];
                 }
             """)
+            
             for url in js_result:
                 if url.startswith("//"):
                     url = "https:" + url
@@ -113,13 +301,13 @@ async def extract_playlist_url(movie_url):
                 if url not in playlist_urls and ("/playlist/" in url):
                     playlist_urls.append(url)
                     print(f"[+] Da JS: {url}")
+                    
         except Exception as e:
             print(f"[-] JS extraction: {e}")
         
         await browser.close()
     
     return playlist_urls
-
 
 async def get_best_playlist(movie_url):
     """Trova la playlist migliore"""
@@ -148,7 +336,6 @@ async def get_best_playlist(movie_url):
     
     return None
 
-
 # ============================================================
 # Flask Routes
 # ============================================================
@@ -156,7 +343,6 @@ async def get_best_playlist(movie_url):
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
-
 
 @app.route('/extract', methods=['POST'])
 def api_extract():
@@ -182,9 +368,8 @@ def api_extract():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-
 # ============================================================
-# HTML UI ULTRA-RINNOVATA CON CONTROLLI TELECOMANDO SMART TV
+# HTML UI (identica a prima)
 # ============================================================
 
 HTML_TEMPLATE = '''
@@ -597,17 +782,15 @@ if __name__ == '__main__':
             if url:
                 print(f"\n[+] Link playlist: {url}")
             else:
-                print("\n[-] Nessuna playlist trouvata")
+                print("\n[-] Nessuna playlist trovata")
         asyncio.run(main())
     else:
-        # Legge dinamicamente la PORT passata da Render (altrimenti usa 8080)
         port = int(os.environ.get("PORT", 8080))
         print(f"""
 ╔══════════════════════════════════════════════╗
 ║      VixSrc TV Extractor & Fluid Player      ║
 ║──────────────────────────────────────────────║
-║  Web UI Port: {port}                           ║
+║  Web UI Port: {port}                          ║
 ╚══════════════════════════════════════════════╝
         """)
-        # Forzato debug=False per l'ambiente online di produzione
         app.run(host='0.0.0.0', port=port, debug=False)
