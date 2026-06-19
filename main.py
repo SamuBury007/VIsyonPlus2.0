@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 VixSrc M3U8 Extractor v5 - Ottimizzato per Smart TV Samsung (Tizen) & Telecomando
+Modificato per l'hosting online su Render.com
 """
 
+import os
 import re
 import sys
 import json
@@ -13,7 +15,7 @@ from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
 
 async def extract_playlist_url(movie_url):
@@ -26,7 +28,15 @@ async def extract_playlist_url(movie_url):
     from playwright.async_api import async_playwright
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Aggiunti argomenti di camuffamento per bypassare i blocchi sui server cloud
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        )
         context = await browser.new_context(
             user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 720}
@@ -63,14 +73,14 @@ async def extract_playlist_url(movie_url):
         print("[*] In attesa di richieste a /playlist/...")
         
         try:
-            await page.goto(movie_url, wait_until="networkidle", timeout=30000)
-            # Aspetta più a lungo per catturare tutto
+            await page.goto(movie_url, wait_until="domcontentloaded", timeout=30000)
+            # Aspetta per dare tempo alla pagina di caricare i player asincroni
             for i in range(15):
                 await asyncio.sleep(1)
                 if playlist_urls:
                     print(f"   [+] Già trovati {len(playlist_urls)} link playlist")
         except Exception as e:
-            print(f"[-] Timeout, ma continuo...")
+            print(f"[-] Timeout o blocco durante il caricamento, procedo comunque...")
             await asyncio.sleep(5)
         
         # Prova anche con evaluate per estrarre direttamente dal JS
@@ -79,17 +89,13 @@ async def extract_playlist_url(movie_url):
             js_result = await page.evaluate("""
                 () => {
                     const results = [];
-                    // Cerca in tutti gli script tag
                     document.querySelectorAll('script').forEach(s => {
                         const text = s.textContent || '';
-                        // Cerca URL con /playlist/
                         const matches = text.match(/https?:\\/\\/[^'"\\s]*\\/playlist\\/[^'"\\s]*/g);
                         if (matches) results.push(...matches);
-                        // Cerca URL vixsrc.to/playlist
                         const matches2 = text.match(/vixsrc\\.to\\/playlist\\/[^'"\\s,&]*/g);
                         if (matches2) results.push(...matches2.map(u => 'https://' + u));
                     });
-                    // Cerca nel DOM
                     const all = document.querySelectorAll('*');
                     all.forEach(el => {
                         if (el.src && el.src.includes('/playlist/')) results.push(el.src);
@@ -100,7 +106,6 @@ async def extract_playlist_url(movie_url):
                 }
             """)
             for url in js_result:
-                # Normalizza: se inizia con // o è relativo
                 if url.startswith("//"):
                     url = "https:" + url
                 elif url.startswith("/"):
@@ -127,22 +132,17 @@ async def get_best_playlist(movie_url):
     for u in urls:
         print(f"   - {u}")
     
-    # Filtra: vogliamo quelli su vixsrc.to/playlist/
     vixsrc_playlists = [u for u in urls if "vixsrc.to/playlist/" in u]
     
     if vixsrc_playlists:
-        # Preferisci 1080p
         _1080p = [u for u in vixsrc_playlists if "1080p" in u or "1080" in u]
         if _1080p:
             return _1080p[0]
-        # Poi 720p
         _720p = [u for u in vixsrc_playlists if "720p" in u or "720" in u]
         if _720p:
             return _720p[0]
-        # Altrimenti il primo
         return vixsrc_playlists[0]
     
-    # Fallback: qualsiasi playlist
     if urls:
         return urls[0]
     
@@ -178,7 +178,7 @@ def api_extract():
                 'url': playlist_url,
             })
         else:
-            return jsonify({'success': False, 'error': 'Nessun link playlist trovato.'})
+            return jsonify({'success': False, 'error': 'Nessun link playlist trovato. Il sito potrebbe bloccare le connessioni dal server cloud.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -201,7 +201,6 @@ HTML_TEMPLATE = '''
                background: #141414; color: #fff; line-height: 1.6; overflow-x: hidden; }
         
         .container { max-width: 1000px; margin: 40px auto; padding: 0 20px; transition: opacity 0.3s; }
-        /* Pseudo-Fullscreen: Nasconde l'interfaccia sotto quando attivo */
         body.fullscreen-active .container { display: none !important; }
 
         h1 { color: #E50914; font-size: 2.2em; letter-spacing: 1px; text-transform: uppercase; text-align: center; margin-bottom: 5px; font-weight: 800; }
@@ -230,7 +229,6 @@ HTML_TEMPLATE = '''
         .result.success { border-color: rgba(46, 204, 113, 0.4); background: rgba(46, 204, 113, 0.1); color: #2ecc71; display: block; }
         .result.error { border-color: rgba(231, 76, 60, 0.4); background: rgba(231, 76, 60, 0.1); color: #e74c3c; display: block; }
         
-        /* 🎬 PLAYER INTERNAZIONALE PREMIUM (OTTIMIZZATO TV) */
         .player-container {
             position: relative;
             width: 100%;
@@ -244,7 +242,6 @@ HTML_TEMPLATE = '''
         }
         .player-container.active { display: block; }
         
-        /* Forza lo Pseudo-Fullscreen assoluto per aggirare i blocchi del simulatore */
         body.fullscreen-active .player-container {
             position: fixed !important;
             top: 0 !important; left: 0 !important;
@@ -257,7 +254,6 @@ HTML_TEMPLATE = '''
         
         video { width: 100%; height: 100%; object-fit: contain; display: block; }
         
-        /* Buffering Spinner Centrale */
         .video-buffering {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
@@ -271,7 +267,6 @@ HTML_TEMPLATE = '''
             pointer-events: none;
         }
         
-        /* Controlli Overlay Fluidi */
         .video-controls {
             position: absolute;
             bottom: 0; left: 0; right: 0;
@@ -287,7 +282,6 @@ HTML_TEMPLATE = '''
         .player-container:hover .video-controls,
         .player-container.show-controls .video-controls { opacity: 1; }
         
-        /* Barra Avanzamento */
         .progress-area { height: 5px; width: 100%; background: rgba(255,255,255,0.2); cursor: pointer; position: relative; border-radius: 4px; transition: height 0.1s; }
         .progress-area:hover { height: 8px; }
         .progress-bar { height: 100%; width: 0%; background: #E50914; position: relative; border-radius: 4px; }
@@ -311,7 +305,6 @@ HTML_TEMPLATE = '''
         
         .time-display { font-size: 0.95em; color: #e0e0e0; font-weight: 500; }
         
-        /* OSD: Feedback grafico immediato a centro schermo */
         .osd-alert {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.8);
             background: rgba(0,0,0,0.75); padding: 20px 30px; border-radius: 30px; font-size: 2em; font-weight: bold;
@@ -431,12 +424,10 @@ HTML_TEMPLATE = '''
 
         function startVideo(m3u8Url) {
             playerContainer.classList.add('active');
-            playerContainer.focus(); // Prende il focus per catturare le freccia del telecomando
+            playerContainer.focus();
             
-            // Forza lo Pseudo Fullscreen immediato all'avvio su TV
             togglePseudoFullscreen(true);
 
-            // Ottimizzazione fluidità Hls.js per hardware TV limitati
             const hlsConfig = {
                 maxBufferLength: 30,
                 maxMaxBufferLength: 60,
@@ -460,7 +451,6 @@ HTML_TEMPLATE = '''
             }
         }
 
-        // Gestione degli indicatori di caricamento nel video (Fluidità)
         video.addEventListener('waiting', () => bufferingSpinner.style.display = 'block');
         video.addEventListener('playing', () => bufferingSpinner.style.display = 'none');
 
@@ -520,9 +510,6 @@ HTML_TEMPLATE = '''
             video.volume = e.target.value;
         });
 
-        // ============================================================
-        // FIX SCHERMO INTERO: Pseudo-Fullscreen via CSS Layout
-        // ============================================================
         function togglePseudoFullscreen(forceTrue = false) {
             const isActive = document.body.classList.contains('fullscreen-active');
             if (isActive && !forceTrue) {
@@ -555,9 +542,6 @@ HTML_TEMPLATE = '''
             setTimeout(() => osdAlert.classList.remove('show'), 800);
         }
 
-        // ============================================================
-        // MAPPA KEYBOARD / TELECOMANDO SAMSUNG TIZEN (Frecce e Pausa)
-        // ============================================================
         window.addEventListener('keydown', function(e) {
             if (!playerContainer.classList.contains('active')) return;
             
@@ -565,38 +549,29 @@ HTML_TEMPLATE = '''
             let handled = false;
 
             switch(e.keyCode) {
-                // FRECCIA DESTRA (Tastiera o Telecomando) -> Avanti di 15 secondi
                 case 39: 
                     video.currentTime = Math.min(video.duration, video.currentTime + 15);
                     triggerOSD('+15s ⏩');
                     handled = true;
                     break;
-                
-                // FRECCIA SINISTRA (Tastiera o Telecomando) -> Indietro di 15 secondi
                 case 37: 
                     video.currentTime = Math.max(0, video.currentTime - 15);
                     triggerOSD('-15s ⏪');
                     handled = true;
                     break;
-                
-                // TASTO ENTER / OK o BARRA SPAZIATRICE -> Play/Pausa
                 case 13: 
                 case 32:
                     togglePlay();
                     handled = true;
                     break;
-                
-                // Tasti multimediali nativi (Presenti su telecomandi TV Samsung)
-                case 415: // Play nativo TV
-                case 19:  // Pause nativo TV
-                case 10252: // MediaPlayPause Smart TV
+                case 415: 
+                case 19:  
+                case 10252: 
                     togglePlay();
                     handled = true;
                     break;
-
-                // Tasto BACK / RETURN dei telecomandi Samsung per ridurre il video
-                case 27:   // ESC
-                case 10009: // Codice Tizen Return Button
+                case 27:   
+                case 10009: 
                     if (document.body.classList.contains('fullscreen-active')) {
                         togglePseudoFullscreen(false);
                         handled = true;
@@ -622,14 +597,17 @@ if __name__ == '__main__':
             if url:
                 print(f"\n[+] Link playlist: {url}")
             else:
-                print("\n[-] Nessuna playlist trovata")
+                print("\n[-] Nessuna playlist trouvata")
         asyncio.run(main())
     else:
-        print("""
+        # Legge dinamicamente la PORT passata da Render (altrimenti usa 8080)
+        port = int(os.environ.get("PORT", 8080))
+        print(f"""
 ╔══════════════════════════════════════════════╗
 ║      VixSrc TV Extractor & Fluid Player      ║
 ║──────────────────────────────────────────────║
-║  Web UI: http://localhost:8080               ║
+║  Web UI Port: {port}                           ║
 ╚══════════════════════════════════════════════╝
         """)
-        app.run(host='0.0.0.0', port=8080, debug=True)
+        # Forzato debug=False per l'ambiente online di produzione
+        app.run(host='0.0.0.0', port=port, debug=False)
