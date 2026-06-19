@@ -2,6 +2,7 @@
 
 """
 VixSrc M3U8 Extractor v6 - Con ScraperAPI (Sicuro)
+Ottimizzato per trovare link playlist nel formato https://vixsrc.to/playlist/...
 """
 
 import os
@@ -21,51 +22,126 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
 def extract_playlist_from_html(html):
-    """Estrae i link playlist dall'HTML"""
+    """Estrae i link playlist dall'HTML - Versione ottimizzata per vixsrc.to"""
     urls = []
     
-    # Pattern per link completi
-    pattern1 = r'https?://vixsrc\.to/playlist/[^"\'\\s<>]+'
-    matches1 = re.findall(pattern1, html)
-    urls.extend(matches1)
+    # 🔥 PATTERN PRINCIPALE: Cerca link che iniziano con https://vixsrc.to/playlist/
+    patterns = [
+        # Link completi con tutti i parametri
+        r'https?://vixsrc\.to/playlist/\d+\?[^"\'\\s<>]+',
+        r'https?://vixsrc\.to/playlist/[^"\'\\s<>]+',
+        # Link senza https
+        r'vixsrc\.to/playlist/\d+\?[^"\'\\s<>]+',
+        r'vixsrc\.to/playlist/[^"\'\\s<>]+',
+        # Link in formato JSON/JS
+        r'["\'](https?://vixsrc\.to/playlist/[^"\'\\s<>]+)["\']',
+        r'["\'](vixsrc\.to/playlist/[^"\'\\s<>]+)["\']',
+    ]
     
-    # Pattern per link relativi
-    pattern2 = r'vixsrc\.to/playlist/[^"\'\\s<>]+'
-    matches2 = re.findall(pattern2, html)
-    for m in matches2:
-        if not m.startswith('http'):
-            urls.append('https://' + m)
+    for pattern in patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            # Assicura che inizi con http
+            if match.startswith('vixsrc.to'):
+                match = 'https://' + match
+            if match.startswith('//'):
+                match = 'https:' + match
+            # Verifica che sia un link playlist valido
+            if '/playlist/' in match and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Trovato: {match[:80]}...")
     
-    # Pattern con parametri
-    pattern3 = r'https?://[^"\'\\s]+/playlist/[^"\'\\s]+\.m3u8[^"\'\\s]*'
-    matches3 = re.findall(pattern3, html)
-    urls.extend(matches3)
+    # 🔥 Cerca specificamente il pattern con i parametri che hai mostrato
+    specific_pattern = r'https?://vixsrc\.to/playlist/\d+\?type=video&rendition=\d+p&token=[^"\'\\s<>]+&expires=\d+&edge=[^"\'\\s<>]+'
+    specific_matches = re.findall(specific_pattern, html)
+    for match in specific_matches:
+        if match not in urls:
+            urls.append(match)
+            print(f"   [DEBUG] Trovato link completo: {match[:80]}...")
     
-    # Cerca anche nei tag video e source
-    pattern4 = r'src=["\']([^"\']+\.m3u8[^"\']*)["\']'
-    matches4 = re.findall(pattern4, html)
-    for m in matches4:
-        if 'vixsrc' in m or 'playlist' in m:
-            if m.startswith('//'):
-                m = 'https:' + m
-            elif m.startswith('/'):
-                m = 'https://vixsrc.to' + m
-            urls.append(m)
+    # 🔥 Cerca nei tag video e source
+    tag_patterns = [
+        r'<source[^>]+src=["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'<video[^>]+src=["\']([^"\']+\.m3u8[^"\']*)["\']',
+        r'file["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'source["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+    ]
     
-    # Cerca nei tag iframe
-    pattern5 = r'<iframe[^>]+src=["\']([^"\']+)["\']'
-    matches5 = re.findall(pattern5, html)
-    for m in matches5:
-        if 'vixsrc' in m or 'playlist' in m:
-            if m.startswith('//'):
-                m = 'https:' + m
-            urls.append(m)
+    for pattern in tag_patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            if 'vixsrc.to/playlist/' in match and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Trovato da tag: {match[:80]}...")
     
-    # Deduplica
+    # 🔥 Cerca nel JavaScript
+    js_patterns = [
+        r'playlistUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
+        r'url["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'playlist["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'hlsUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
+        r'videoUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
+    ]
+    
+    for pattern in js_patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            if 'vixsrc.to/playlist/' in match and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Trovato da JS: {match[:80]}...")
+    
+    # 🔥 Cerca anche i link embed che potrebbero contenere playlist
+    embed_pattern = r'https?://vixsrc\.to/embed/\d+[^"\'\\s<>]*'
+    embed_matches = re.findall(embed_pattern, html)
+    for embed in embed_matches:
+        if embed not in urls:
+            urls.append(embed)
+            print(f"   [DEBUG] Trovato embed: {embed}")
+    
+    # 🔥 Cerca nel localStorage/sessionStorage (spesso usato da vixsrc)
+    storage_patterns = [
+        r'localStorage\.setItem\([^,]+,\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'sessionStorage\.setItem\([^,]+,\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+    ]
+    
+    for pattern in storage_patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            if 'vixsrc.to/playlist/' in match and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Trovato da storage: {match[:80]}...")
+    
     return list(set(urls))
 
+async def extract_playlist_from_embed(embed_url):
+    """Se trova un embed, lo segue per estrarre la playlist"""
+    try:
+        if not SCRAPERAPI_KEY:
+            return []
+        
+        print(f"[*] Seguendo embed: {embed_url}")
+        
+        params = {
+            'api_key': SCRAPERAPI_KEY,
+            'url': embed_url,
+            'render': 'true',
+            'wait_for': 5000,
+            'premium': 'true'
+        }
+        
+        api_url = 'https://api.scraperapi.com/?' + urlencode(params)
+        response = requests.get(api_url, timeout=60)
+        
+        if response.status_code == 200:
+            html = response.text
+            return extract_playlist_from_html(html)
+        return []
+    except Exception as e:
+        print(f"[-] Errore seguendo embed: {e}")
+        return []
+
 async def get_playlist_with_scraperapi(movie_url):
-    """Usa ScraperAPI per ottenere l'HTML"""
+    """Usa ScraperAPI per ottenere l'HTML - Supporta sia movie che embed"""
     try:
         if not SCRAPERAPI_KEY:
             print("[-] ERRORE: SCRAPERAPI_KEY non configurata!")
@@ -74,19 +150,40 @@ async def get_playlist_with_scraperapi(movie_url):
         
         print(f"[*] Richiesta a ScraperAPI per: {movie_url}")
         
+        # 🔥 Se è un embed, seguilo direttamente
+        if '/embed/' in movie_url:
+            print("[*] Rilevato URL embed, seguo...")
+            return await extract_playlist_from_embed(movie_url)
+        
+        # 🔥 Se è già un link playlist, restituiscilo direttamente
+        if '/playlist/' in movie_url and '.m3u8' in movie_url:
+            print("[+] URL già una playlist valida!")
+            return [movie_url]
+        
+        # 🔥 Se è un URL movie, lo elaboriamo
         params = {
             'api_key': SCRAPERAPI_KEY,
             'url': movie_url,
             'render': 'true',
             'country_code': 'it',
-            'wait_for': 5000,
-            'keep_headers': 'true'
+            'wait_for': 8000,
+            'keep_headers': 'true',
+            'premium': 'true'
         }
         
         api_url = 'https://api.scraperapi.com/?' + urlencode(params)
         
         headers = {
-            'User-Agent': USER_AGENT
+            'User-Agent': USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Referer': 'https://vixsrc.to/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Upgrade-Insecure-Requests': '1'
         }
         
         print("[*] Attendere... L'estrazione potrebbe richiedere fino a 30 secondi")
@@ -96,18 +193,40 @@ async def get_playlist_with_scraperapi(movie_url):
             html = response.text
             print(f"[+] HTML ricevuto ({len(html)} bytes)")
             
+            # Salva HTML per debug
+            try:
+                with open('/tmp/debug.html', 'w', encoding='utf-8') as f:
+                    f.write(html)
+                print("[*] HTML salvato in /tmp/debug.html")
+            except:
+                pass
+            
             # Estrai i link
             urls = extract_playlist_from_html(html)
             print(f"[+] Trovati {len(urls)} link playlist")
             
+            # Mostra i primi 5 link trovati
             if urls:
-                for url in urls[:5]:  # Mostra i primi 5
-                    print(f"   - {url}")
+                print("[*] Prime 5 corrispondenze:")
+                for i, url in enumerate(urls[:5], 1):
+                    print(f"   {i}. {url[:100]}...")
             
-            return urls
+            # 🔥 Se abbiamo trovato un embed e nessuna playlist, seguiamo l'embed
+            embed_urls = [u for u in urls if '/embed/' in u]
+            playlist_urls = [u for u in urls if '/playlist/' in u]
+            
+            if embed_urls and not playlist_urls:
+                print("[*] Trovato embed, provo a seguirlo per trovare la playlist...")
+                nested_urls = await extract_playlist_from_embed(embed_urls[0])
+                if nested_urls:
+                    urls.extend(nested_urls)
+                    print(f"[+] Trovate {len(nested_urls)} playlist dall'embed")
+            
+            return list(set(urls))
         else:
             print(f"[-] Errore ScraperAPI: {response.status_code}")
-            print(f"   Risposta: {response.text[:200]}")
+            if response.text:
+                print(f"   Risposta: {response.text[:200]}")
             return []
             
     except requests.exceptions.Timeout:
@@ -134,13 +253,13 @@ async def get_best_playlist(movie_url):
         print(f"[*] Di cui {len(vixsrc_playlists)} da vixsrc.to")
         
         # Cerca 1080p
-        _1080p = [u for u in vixsrc_playlists if "1080p" in u or "1080" in u]
+        _1080p = [u for u in vixsrc_playlists if "rendition=1080" in u or "1080p" in u or "1080" in u]
         if _1080p:
             print("[+] Scelto: 1080p")
             return _1080p[0]
         
         # Cerca 720p
-        _720p = [u for u in vixsrc_playlists if "720p" in u or "720" in u]
+        _720p = [u for u in vixsrc_playlists if "rendition=720" in u or "720p" in u or "720" in u]
         if _720p:
             print("[+] Scelto: 720p")
             return _720p[0]
@@ -241,8 +360,12 @@ HTML_TEMPLATE = '''
         .player-container { margin-top: 20px; display: none; background: #000; border-radius: 6px; overflow: hidden; }
         .player-container.active { display: block; }
         video { width: 100%; display: block; max-height: 500px; background: #000; }
-        .debug-info { margin-top: 10px; padding: 10px; background: #222; border-radius: 4px; font-size: 0.8em; color: #888; display: none; }
+        .debug-info { margin-top: 10px; padding: 10px; background: #222; border-radius: 4px; font-size: 0.8em; color: #888; display: none; word-break: break-all; }
         .debug-info.show { display: block; }
+        .examples { margin-top: 15px; padding: 10px; background: #1a1a1a; border-radius: 6px; border: 1px solid #333; }
+        .examples p { color: #888; font-size: 0.85em; margin-bottom: 5px; }
+        .examples code { color: #E50914; background: #262626; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; cursor: pointer; }
+        .examples code:hover { background: #333; }
     </style>
 </head>
 <body>
@@ -260,6 +383,12 @@ HTML_TEMPLATE = '''
             
             <div class="result" id="result"></div>
             <div class="debug-info" id="debug-info"></div>
+            
+            <div class="examples">
+                <p>📌 Esempi di URL da provare:</p>
+                <code onclick="setUrl('https://vixsrc.to/movie/786892/')">https://vixsrc.to/movie/786892/</code><br>
+                <code onclick="setUrl('https://vixsrc.to/movie/240126')">https://vixsrc.to/movie/240126</code>
+            </div>
         </div>
         
         <div class="player-container" id="player-container">
@@ -269,6 +398,10 @@ HTML_TEMPLATE = '''
     
     <script>
         let hlsInstance = null;
+        
+        function setUrl(url) {
+            document.getElementById('url-input').value = url;
+        }
         
         async function extract() {
             const url = document.getElementById('url-input').value.trim();
@@ -324,7 +457,7 @@ HTML_TEMPLATE = '''
             
             // Mostra debug info
             const debug = document.getElementById('debug-info');
-            debug.textContent = 'URL: ' + url;
+            debug.textContent = 'URL Playlist: ' + url;
             debug.classList.add('show');
             
             if (Hls.isSupported()) {
@@ -333,7 +466,9 @@ HTML_TEMPLATE = '''
                 }
                 hlsInstance = new Hls({
                     maxBufferLength: 30,
-                    maxMaxBufferLength: 60
+                    maxMaxBufferLength: 60,
+                    enableWorker: true,
+                    lowLatencyMode: false
                 });
                 hlsInstance.loadSource(url);
                 hlsInstance.attachMedia(video);
@@ -344,6 +479,9 @@ HTML_TEMPLATE = '''
                 });
                 hlsInstance.on(Hls.Events.ERROR, function(event, data) {
                     console.error('HLS Error:', data);
+                    if (data.fatal) {
+                        showResult('❌ Errore riproduzione: ' + data.details, 'error');
+                    }
                 });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = url;
@@ -362,6 +500,13 @@ HTML_TEMPLATE = '''
             res.className = `result ${type}`;
             res.innerHTML = msg;
         }
+        
+        // Supporto per Enter key
+        document.getElementById('url-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                extract();
+            }
+        });
     </script>
 </body>
 </html>
