@@ -2,13 +2,11 @@ services:
   - type: web
     name: vixsrc-extractor
     env: python
-    buildCommand: |
-      chmod +x start.sh
-      ./start.sh
+    buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.10
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /opt/render/project/src/playwright_bins
+      - key: SCRAPERAPI_KEY
+        sync: false
     plan: free
