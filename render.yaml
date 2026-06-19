@@ -7,6 +7,4 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.10
-      - key: SCRAPERAPI_KEY
-        value: d00326e8fa5fa62afba67263f88c401d
     plan: free
