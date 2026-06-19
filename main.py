@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v6 - Ibrido Playwright + Proxy
-Funziona su Render.com con supporto proxy
+VixSrc M3U8 Extractor v6 - Con Proxy Residenziali Autenticati
 """
 
 import os
@@ -19,28 +18,119 @@ app = Flask(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 
-# Configurazione proxy (opzionale)
-PROXY_URL = os.environ.get("PROXY_URL", "")
+# 🔑 PROXY CON AUTENTICAZIONE
+PROXY_LIST = os.environ.get("PROXY_LIST", "")
 
-def get_proxy_config():
-    """Configura il proxy per Playwright se disponibile"""
-    if PROXY_URL:
-        # Estrai IP e porta da PROXY_URL (formato: http://IP:PORTA)
-        proxy_parts = PROXY_URL.replace("http://", "").replace("https://", "").split(":")
-        if len(proxy_parts) == 2:
+# Lista di proxy hardcoded (li puoi anche mettere come variabile d'ambiente)
+HARDCODED_PROXIES = [
+    "31.59.20.176:6754:ehsmnoqu:23aljm7zs2y7",
+    "92.113.242.158:6742:ehsmnoqu:23aljm7zs2y7",
+    "23.95.150.145:6114:ehsmnoqu:23aljm7zs2y7",
+    "38.154.203.95:5863:ehsmnoqu:23aljm7zs2y7",
+    "198.105.121.200:6462:ehsmnoqu:23aljm7zs2y7",
+    "64.137.96.74:6641:ehsmnoqu:23aljm7zs2y7",
+    "38.154.185.97:6370:ehsmnoqu:23aljm7zs2y7",
+    "142.111.67.146:5611:ehsmnoqu:23aljm7zs2y7",
+    "191.96.254.138:6185:ehsmnoqu:23aljm7zs2y7",
+    "2.57.20.2:6983:ehsmnoqu:23aljm7zs2y7"
+]
+
+def parse_proxy(proxy_str):
+    """
+    Parsa una stringa proxy nel formato: IP:PORTA:USERNAME:PASSWORD
+    Restituisce un dizionario per Playwright
+    """
+    try:
+        parts = proxy_str.split(":")
+        if len(parts) == 4:
+            ip, port, username, password = parts
             return {
-                "server": f"http://{proxy_parts[0]}:{proxy_parts[1]}"
+                "server": f"http://{ip}:{port}",
+                "username": username,
+                "password": password
             }
+        elif len(parts) == 2:
+            ip, port = parts
+            return {
+                "server": f"http://{ip}:{port}"
+            }
+    except Exception as e:
+        print(f"[-] Errore parsing proxy {proxy_str}: {e}")
+    return None
+
+def get_proxy_list():
+    """Ottiene la lista dei proxy dalla variabile d'ambiente o da hardcoded"""
+    if PROXY_LIST:
+        # Se la variabile d'ambiente contiene più proxy separati da virgola
+        proxies = PROXY_LIST.split(",")
+        return [p.strip() for p in proxies if p.strip()]
+    return HARDCODED_PROXIES
+
+def test_proxy(proxy_str):
+    """Testa un proxy per verificare che funzioni"""
+    try:
+        proxy_config = parse_proxy(proxy_str)
+        if not proxy_config:
+            return False
+        
+        server = proxy_config.get("server", "")
+        if not server:
+            return False
+        
+        proxies = {
+            "http": server,
+            "https": server
+        }
+        
+        # Se ha username/password, li includiamo
+        if "username" in proxy_config and "password" in proxy_config:
+            auth = f"{proxy_config['username']}:{proxy_config['password']}@"
+            server_with_auth = server.replace("http://", f"http://{auth}")
+            proxies = {
+                "http": server_with_auth,
+                "https": server_with_auth.replace("http://", "https://")
+            }
+        
+        response = requests.get("http://httpbin.org/ip", proxies=proxies, timeout=5)
+        if response.status_code == 200:
+            print(f"[+] Proxy funzionante: {proxy_str[:30]}...")
+            return True
+        return False
+    except Exception as e:
+        return False
+
+def get_working_proxy():
+    """Trova un proxy funzionante dalla lista"""
+    proxies = get_proxy_list()
+    
+    # Mescola per varietà
+    random.shuffle(proxies)
+    
+    print(f"[*] Testando {len(proxies)} proxy...")
+    
+    for proxy in proxies[:10]:  # Testa solo i primi 10 per velocità
+        if test_proxy(proxy):
+            return proxy
+    
+    print("[-] Nessun proxy funzionante trovato, provo senza proxy")
     return None
 
 async def extract_playlist_url(movie_url):
     """
-    Usa Playwright per catturare SPECIFICAMENTE le richieste
-    a vixsrc.to/playlist/... che sono i link M3U8 funzionanti
+    Usa Playwright per catturare le richieste a /playlist/
     """
     playlist_urls = []
     
     from playwright.async_api import async_playwright
+    
+    # Ottieni un proxy funzionante
+    proxy_str = get_working_proxy()
+    proxy_config = None
+    
+    if proxy_str:
+        proxy_config = parse_proxy(proxy_str)
+        if proxy_config:
+            print(f"[*] Utilizzo proxy: {proxy_config['server']}")
     
     async with async_playwright() as p:
         # Configura il browser con proxy se disponibile
@@ -58,10 +148,8 @@ async def extract_playlist_url(movie_url):
             ]
         }
         
-        proxy_config = get_proxy_config()
         if proxy_config:
             launch_args['proxy'] = proxy_config
-            print(f"[*] Utilizzo proxy: {proxy_config['server']}")
         
         browser = await p.chromium.launch(**launch_args)
         context = await browser.new_context(
@@ -82,18 +170,17 @@ async def extract_playlist_url(movie_url):
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['it-IT', 'it', 'en-US', 'en']
             });
+            window.chrome = { runtime: {} };
         """)
         
-        # Intercetta TUTTE le richieste
+        # Intercetta le richieste
         async def handle_request(request):
             url = request.url
-            # Cerchiamo SOLO i link /playlist/ su vixsrc.to
             if "/playlist/" in url and "vixsrc.to" in url:
                 if url not in playlist_urls:
                     playlist_urls.append(url)
                     print(f"[+] PLAYLIST: {url}")
             
-            # Anche se ha /playlist/ in altri formati
             if "playlist" in url and "m3u8" in url:
                 if url not in playlist_urls:
                     playlist_urls.append(url)
@@ -101,7 +188,6 @@ async def extract_playlist_url(movie_url):
         
         async def handle_response(response):
             url = response.url
-            # Cattura anche i redirect che portano a playlist
             if "/playlist/" in url and "vixsrc.to" in url:
                 if url not in playlist_urls:
                     playlist_urls.append(url)
@@ -114,34 +200,30 @@ async def extract_playlist_url(movie_url):
         print("[*] In attesa di richieste a /playlist/...")
         
         try:
-            # Naviga con wait_until networkidle per catturare tutto
             await page.goto(movie_url, wait_until="networkidle", timeout=60000)
             
-            # Aspetta per dare tempo alla pagina di caricare i player asincroni
             for i in range(20):
                 await asyncio.sleep(1)
                 if playlist_urls:
-                    print(f"   [+] Già trovati {len(playlist_urls)} link playlist")
+                    print(f"   [+] Trovati {len(playlist_urls)} link")
                     break
                     
-            # Prova a fare scroll per attivare il player
             await page.evaluate("window.scrollBy(0, 500)")
             await asyncio.sleep(2)
             await page.evaluate("window.scrollTo(0, 0)")
             await asyncio.sleep(2)
             
         except Exception as e:
-            print(f"[-] Timeout o blocco durante il caricamento: {e}")
+            print(f"[-] Timeout o blocco: {e}")
             await asyncio.sleep(5)
         
-        # Prova anche con evaluate per estrarre direttamente dal JS
+        # Estrai via JavaScript
         try:
             print("[*] Provo estrazione dal JavaScript...")
             js_result = await page.evaluate("""
                 () => {
                     const results = [];
                     
-                    // Cerca in tutti gli script
                     document.querySelectorAll('script').forEach(s => {
                         const text = s.textContent || '';
                         const matches = text.match(/https?:\\/\\/[^'"\\s]*\\/playlist\\/[^'"\\s]*/g);
@@ -150,15 +232,12 @@ async def extract_playlist_url(movie_url):
                         if (matches2) results.push(...matches2.map(u => 'https://' + u));
                     });
                     
-                    // Cerca negli attributi degli elementi
-                    const all = document.querySelectorAll('*');
-                    all.forEach(el => {
+                    document.querySelectorAll('*').forEach(el => {
                         if (el.src && el.src.includes('/playlist/')) results.push(el.src);
                         if (el.href && el.href.includes('/playlist/')) results.push(el.href);
                         if (el.data && typeof el.data === 'string' && el.data.includes('/playlist/')) results.push(el.data);
                     });
                     
-                    // Cerca nel localStorage e sessionStorage
                     try {
                         for (let key in localStorage) {
                             const val = localStorage[key] || '';
@@ -200,29 +279,24 @@ async def get_best_playlist(movie_url):
     for u in urls:
         print(f"   - {u}")
     
-    # Filtra: vogliamo quelli su vixsrc.to/playlist/
     vixsrc_playlists = [u for u in urls if "vixsrc.to/playlist/" in u]
     
     if vixsrc_playlists:
-        # Preferisci 1080p
         _1080p = [u for u in vixsrc_playlists if "1080p" in u or "1080" in u]
         if _1080p:
             return _1080p[0]
-        # Poi 720p
         _720p = [u for u in vixsrc_playlists if "720p" in u or "720" in u]
         if _720p:
             return _720p[0]
-        # Altrimenti il primo
         return vixsrc_playlists[0]
     
-    # Fallback: qualsiasi playlist
     if urls:
         return urls[0]
     
     return None
 
 # ============================================================
-# Flask Routes
+# Flask Routes (IDENTICO AL TUO CODICE)
 # ============================================================
 
 @app.route('/')
@@ -249,12 +323,12 @@ def api_extract():
                 'url': playlist_url,
             })
         else:
-            return jsonify({'success': False, 'error': 'Nessun link playlist trovato. Il sito potrebbe bloccare le connessioni dal server cloud.'})
+            return jsonify({'success': False, 'error': 'Nessun link playlist trovato.'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================================
-# HTML UI (IDENTICO AL TUO CODICE CHE FUNZIONA)
+# HTML UI (IDENTICO AL TUO CODICE)
 # ============================================================
 
 HTML_TEMPLATE = '''
@@ -676,7 +750,7 @@ if __name__ == '__main__':
 ║      VixSrc TV Extractor & Fluid Player      ║
 ║──────────────────────────────────────────────║
 ║  Web UI Port: {port}                          ║
-║  Proxy configurato: {"✅ SÌ" if PROXY_URL else "❌ NO"}         ║
+║  Proxy configurati: {len(HARDCODED_PROXIES)}    ║
 ╚══════════════════════════════════════════════╝
         """)
         app.run(host='0.0.0.0', port=port, debug=False)
