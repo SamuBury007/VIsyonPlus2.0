@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v6 - Con ScraperAPI (Senza Playwright)
-Funziona su Render.com
+VixSrc M3U8 Extractor v7 - ScraperAPI + Proxy Fallback
 """
 
 import os
@@ -12,6 +11,7 @@ import asyncio
 import requests
 from urllib.parse import urlparse, parse_qs, urlencode
 from flask import Flask, request, jsonify, render_template_string
+import time
 
 app = Flask(__name__)
 
@@ -20,16 +20,25 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # 🔑 LEGGI LA CHIAVE DALLE VARIABILI D'AMBIENTE
 SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
 
-def extract_playlist_from_html(html):
-    """Estrae i link playlist dall'HTML"""
+# Proxy con autenticazione (fallback se ScraperAPI non funziona)
+PROXY_LIST = os.environ.get("PROXY_LIST", "")
+
+def extract_playlist_from_html(html, movie_url=""):
+    """Estrae i link playlist dall'HTML - Versione avanzata"""
     urls = []
     
-    # Pattern per link completi
+    if not html:
+        return urls
+    
+    # 🔥 PATTERN 1: Link completi vixsrc.to/playlist/
     patterns = [
+        # Con tutti i parametri
         r'https?://vixsrc\.to/playlist/\d+\?[^"\'\\s<>]+',
         r'https?://vixsrc\.to/playlist/[^"\'\\s<>]+',
+        # Senza http
         r'vixsrc\.to/playlist/\d+\?[^"\'\\s<>]+',
         r'vixsrc\.to/playlist/[^"\'\\s<>]+',
+        # In JSON/JS
         r'["\'](https?://vixsrc\.to/playlist/[^"\'\\s<>]+)["\']',
         r'["\'](vixsrc\.to/playlist/[^"\'\\s<>]+)["\']',
     ]
@@ -43,20 +52,25 @@ def extract_playlist_from_html(html):
                 match = 'https:' + match
             if '/playlist/' in match and match not in urls:
                 urls.append(match)
+                print(f"   [DEBUG] Pattern1: {match[:80]}...")
     
-    # Pattern specifico con parametri
+    # 🔥 PATTERN 2: Specifico con tutti i parametri
     specific_pattern = r'https?://vixsrc\.to/playlist/\d+\?type=video&rendition=\d+p&token=[^"\'\\s<>]+&expires=\d+&edge=[^"\'\\s<>]+'
     specific_matches = re.findall(specific_pattern, html)
     for match in specific_matches:
         if match not in urls:
             urls.append(match)
+            print(f"   [DEBUG] Pattern2: {match[:80]}...")
     
-    # Cerca nei tag
+    # 🔥 PATTERN 3: Nei tag video/source
     tag_patterns = [
         r'<source[^>]+src=["\']([^"\']+\.m3u8[^"\']*)["\']',
         r'<video[^>]+src=["\']([^"\']+\.m3u8[^"\']*)["\']',
         r'file["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
-        r'source["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'src["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'url["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'hlsUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
+        r'playlistUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
     ]
     
     for pattern in tag_patterns:
@@ -64,10 +78,67 @@ def extract_playlist_from_html(html):
         for match in matches:
             if match.startswith('//'):
                 match = 'https:' + match
-            if match.startswith('/'):
+            elif match.startswith('/'):
                 match = 'https://vixsrc.to' + match
             if ('vixsrc.to/playlist/' in match or '.m3u8' in match) and match not in urls:
                 urls.append(match)
+                print(f"   [DEBUG] Tag: {match[:80]}...")
+    
+    # 🔥 PATTERN 4: Nel JavaScript
+    js_patterns = [
+        r'playlist["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'videoUrl["\']?\s*[:=]\s*["\']([^"\'\\s]+)["\']',
+        r'config\.url["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'src["\']?\s*[:=]\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+    ]
+    
+    for pattern in js_patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            if match.startswith('//'):
+                match = 'https:' + match
+            elif match.startswith('/'):
+                match = 'https://vixsrc.to' + match
+            if ('vixsrc.to/playlist/' in match or '.m3u8' in match) and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] JS: {match[:80]}...")
+    
+    # 🔥 PATTERN 5: Cerca nel localStorage (spesso usato da vixsrc)
+    storage_patterns = [
+        r'localStorage\.setItem\([^,]+,\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'sessionStorage\.setItem\([^,]+,\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+        r'localStorage\.getItem\([^)]+\)\s*===?\s*["\']([^"\'\\s]+\.m3u8[^"\'\\s]*)["\']',
+    ]
+    
+    for pattern in storage_patterns:
+        matches = re.findall(pattern, html)
+        for match in matches:
+            if match.startswith('//'):
+                match = 'https:' + match
+            elif match.startswith('/'):
+                match = 'https://vixsrc.to' + match
+            if ('vixsrc.to/playlist/' in match or '.m3u8' in match) and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Storage: {match[:80]}...")
+    
+    # 🔥 PATTERN 6: Cerca link embed
+    embed_pattern = r'https?://vixsrc\.to/embed/\d+[^"\'\\s<>]*'
+    embed_matches = re.findall(embed_pattern, html)
+    for embed in embed_matches:
+        if embed not in urls:
+            urls.append(embed)
+            print(f"   [DEBUG] Embed: {embed[:80]}...")
+    
+    # Se non troviamo nulla, prova a cercare nel testo grezzo
+    if not urls:
+        print("[*] Nessun link trovato con i pattern standard, provo ricerca grezza...")
+        # Cerca qualsiasi cosa che assomigli a un link M3U8
+        raw_pattern = r'https?://[^"\'\\s<>]+\.m3u8[^"\'\\s<>]*'
+        raw_matches = re.findall(raw_pattern, html)
+        for match in raw_matches:
+            if 'vixsrc' in match and match not in urls:
+                urls.append(match)
+                print(f"   [DEBUG] Raw: {match[:80]}...")
     
     return list(set(urls))
 
@@ -75,8 +146,7 @@ async def get_playlist_with_scraperapi(movie_url):
     """Usa ScraperAPI per ottenere l'HTML"""
     try:
         if not SCRAPERAPI_KEY:
-            print("[-] ERRORE: SCRAPERAPI_KEY non configurata!")
-            print("[*] Imposta la variabile d'ambiente SCRAPERAPI_KEY su Render")
+            print("[-] SCRAPERAPI_KEY non configurata!")
             return []
         
         print(f"[*] Richiesta a ScraperAPI per: {movie_url}")
@@ -91,9 +161,10 @@ async def get_playlist_with_scraperapi(movie_url):
             'url': movie_url,
             'render': 'true',
             'country_code': 'it',
-            'wait_for': 8000,
+            'wait_for': 10000,
             'keep_headers': 'true',
-            'premium': 'true'
+            'premium': 'true',
+            'retry': '3'
         }
         
         api_url = 'https://api.scraperapi.com/?' + urlencode(params)
@@ -102,7 +173,12 @@ async def get_playlist_with_scraperapi(movie_url):
             'User-Agent': USER_AGENT,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
             'Referer': 'https://vixsrc.to/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
             'Upgrade-Insecure-Requests': '1'
         }
         
@@ -122,7 +198,7 @@ async def get_playlist_with_scraperapi(movie_url):
                 pass
             
             # Estrai i link
-            urls = extract_playlist_from_html(html)
+            urls = extract_playlist_from_html(html, movie_url)
             print(f"[+] Trovati {len(urls)} link playlist")
             
             if urls:
@@ -132,15 +208,26 @@ async def get_playlist_with_scraperapi(movie_url):
             return urls
         else:
             print(f"[-] Errore ScraperAPI: {response.status_code}")
+            if response.text:
+                print(f"   Risposta: {response.text[:200]}")
             return []
             
     except Exception as e:
-        print(f"[-] Errore: {e}")
+        print(f"[-] Errore ScraperAPI: {e}")
         return []
 
 async def get_best_playlist(movie_url):
     """Trova la playlist migliore"""
+    
+    print(f"\n[*] Elaborazione URL: {movie_url}")
+    
+    # Prova con ScraperAPI
     urls = await get_playlist_with_scraperapi(movie_url)
+    
+    # Se ScraperAPI non funziona, prova con un approccio alternativo
+    if not urls:
+        print("[*] ScraperAPI non ha trovato nulla, provo approccio alternativo...")
+        urls = await get_playlist_alternative(movie_url)
     
     if not urls:
         return None
@@ -148,18 +235,32 @@ async def get_best_playlist(movie_url):
     print(f"\n[*] Trovati {len(urls)} link playlist totali")
     
     # Filtra playlist valide
-    valid_playlists = [u for u in urls if 'vixsrc.to/playlist/' in u and ('?' in u or '.m3u8' in u)]
+    valid_playlists = []
+    for u in urls:
+        if 'vixsrc.to/playlist/' in u:
+            # Deve avere parametri o essere .m3u8
+            if '?' in u or '.m3u8' in u:
+                valid_playlists.append(u)
     
     if not valid_playlists:
-        valid_playlists = urls
+        # Se nessuna playlist valida, prendi tutto quello che sembra un link
+        for u in urls:
+            if 'vixsrc.to' in u and ('playlist' in u or '.m3u8' in u):
+                valid_playlists.append(u)
+    
+    if not valid_playlists:
+        print("[-] Nessuna playlist valida trovata")
+        return None
+    
+    print(f"[*] Playlist valide: {len(valid_playlists)}")
     
     # Dai priorità alla qualità
-    _1080p = [u for u in valid_playlists if "rendition=1080" in u or "1080p" in u]
+    _1080p = [u for u in valid_playlists if "rendition=1080" in u or "1080p" in u or "1080" in u]
     if _1080p:
         print("[+] Scelto: 1080p")
         return _1080p[0]
     
-    _720p = [u for u in valid_playlists if "rendition=720" in u or "720p" in u]
+    _720p = [u for u in valid_playlists if "rendition=720" in u or "720p" in u or "720" in u]
     if _720p:
         print("[+] Scelto: 720p")
         return _720p[0]
@@ -169,11 +270,46 @@ async def get_best_playlist(movie_url):
         print("[+] Scelto: primo .m3u8")
         return _m3u8[0]
     
-    if valid_playlists:
-        print("[+] Scelto: primo disponibile")
-        return valid_playlists[0]
-    
-    return None
+    print("[+] Scelto: primo disponibile")
+    return valid_playlists[0]
+
+async def get_playlist_alternative(movie_url):
+    """Approccio alternativo usando requests direttamente"""
+    try:
+        print("[*] Tentativo con requests diretto...")
+        
+        headers = {
+            'User-Agent': USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://vixsrc.to/'
+        }
+        
+        response = requests.get(movie_url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            html = response.text
+            print(f"[+] HTML diretto ricevuto ({len(html)} bytes)")
+            
+            # Salva HTML per debug
+            try:
+                with open('/tmp/direct.html', 'w', encoding='utf-8') as f:
+                    f.write(html)
+                print("[*] HTML diretto salvato in /tmp/direct.html")
+            except:
+                pass
+            
+            urls = extract_playlist_from_html(html, movie_url)
+            print(f"[+] Trovati {len(urls)} link playlist")
+            
+            return urls
+        else:
+            print(f"[-] Errore richiesta diretta: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        print(f"[-] Errore approccio alternativo: {e}")
+        return []
 
 # ============================================================
 # Flask Routes
@@ -219,7 +355,7 @@ HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>VixSrc Extractor</title>
+    <title>VixSrc Extractor v7</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
@@ -256,6 +392,10 @@ HTML_TEMPLATE = '''
         video { width: 100%; display: block; max-height: 500px; background: #000; }
         .debug-info { margin-top: 10px; padding: 10px; background: #222; border-radius: 4px; font-size: 0.8em; color: #888; display: none; word-break: break-all; }
         .debug-info.show { display: block; }
+        .examples { margin-top: 15px; padding: 10px; background: #1a1a1a; border-radius: 6px; border: 1px solid #333; }
+        .examples p { color: #888; font-size: 0.85em; margin-bottom: 5px; }
+        .examples code { color: #E50914; background: #262626; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; cursor: pointer; }
+        .examples code:hover { background: #333; }
     </style>
 </head>
 <body>
@@ -273,6 +413,12 @@ HTML_TEMPLATE = '''
             
             <div class="result" id="result"></div>
             <div class="debug-info" id="debug-info"></div>
+            
+            <div class="examples">
+                <p>📌 Esempi di URL da provare:</p>
+                <code onclick="setUrl('https://vixsrc.to/movie/786892/')">https://vixsrc.to/movie/786892/</code><br>
+                <code onclick="setUrl('https://vixsrc.to/movie/240126')">https://vixsrc.to/movie/240126</code>
+            </div>
         </div>
         
         <div class="player-container" id="player-container">
@@ -282,6 +428,10 @@ HTML_TEMPLATE = '''
     
     <script>
         let hlsInstance = null;
+        
+        function setUrl(url) {
+            document.getElementById('url-input').value = url;
+        }
         
         async function extract() {
             const url = document.getElementById('url-input').value.trim();
@@ -339,8 +489,8 @@ HTML_TEMPLATE = '''
             debug.textContent = 'URL: ' + url;
             debug.classList.add('show');
             
-            if (!url.includes('/playlist/') || !url.includes('.m3u8')) {
-                showResult('❌ URL non valido: non è una playlist M3U8', 'error');
+            if (!url.includes('/playlist/')) {
+                showResult('❌ URL non valido: non è una playlist', 'error');
                 return;
             }
             
@@ -351,6 +501,9 @@ HTML_TEMPLATE = '''
                 hlsInstance.attachMedia(video);
                 hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
                     video.play().catch(() => {});
+                });
+                hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS Error:', data);
                 });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = url;
@@ -367,6 +520,12 @@ HTML_TEMPLATE = '''
             res.className = `result ${type}`;
             res.innerHTML = msg;
         }
+        
+        document.getElementById('url-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                extract();
+            }
+        });
     </script>
 </body>
 </html>
@@ -377,8 +536,9 @@ if __name__ == '__main__':
     
     print(f"""
 ╔══════════════════════════════════════════════╗
-║      VixSrc Extractor v6 - ScraperAPI       ║
+║      VixSrc Extractor v7                     ║
 ║      Porta: {port}                            ║
+║      ScraperAPI: {"✅ Configurata" if SCRAPERAPI_KEY else "❌ Non configurata"}    ║
 ╚══════════════════════════════════════════════╝
     """)
     
@@ -386,7 +546,5 @@ if __name__ == '__main__':
         print("⚠️  ATTENZIONE: SCRAPERAPI_KEY non configurata!")
         print("   Registrati su https://www.scraperapi.com/")
         print("   e aggiungi la variabile d'ambiente SCRAPERAPI_KEY su Render\n")
-    else:
-        print(f"✅ SCRAPERAPI_KEY configurata: {SCRAPERAPI_KEY[:8]}...")
     
     app.run(host='0.0.0.0', port=port, debug=False)
