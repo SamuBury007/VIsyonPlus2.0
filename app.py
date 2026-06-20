@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v8
+VixSrc M3U8 Extractor v9
 """
 
 import os
@@ -11,15 +11,20 @@ from urllib.parse import quote
 from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
 import requests as req_lib
 
+# Forza path Playwright
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/opt/render/.cache/ms-playwright"
+
 app = Flask(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# === WEBSHARE CONFIG ===
-PROXY_HOST = os.environ.get("WEBSHARE_HOST", "p.webshare.io")
-PROXY_PORT = os.environ.get("WEBSHARE_PORT", "80")
-PROXY_USER = os.environ.get("WEBSHARE_USER", "")
-PROXY_PASS = os.environ.get("WEBSHARE_PASS", "")
+PLAYWRIGHT_EXEC = "/opt/render/.cache/ms-playwright/chromium-1223/chrome-linux64/chrome"
+
+# === CONFIG ===
+PROXY_HOST = "p.webshare.io"
+PROXY_PORT = "80"
+PROXY_USER = "ecsdpfxz-rotate"
+PROXY_PASS = "dq51iygaxyw6"
 
 PROXY_SESSION = str(uuid.uuid4())[:8]
 
@@ -28,19 +33,15 @@ def _sticky_user():
     return f"{base}-rotate-session-{PROXY_SESSION}"
 
 def get_proxy_config():
-    if PROXY_USER and PROXY_PASS:
-        return {
-            "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-            "username": _sticky_user(),
-            "password": PROXY_PASS,
-        }
-    return None
+    return {
+        "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+        "username": _sticky_user(),
+        "password": PROXY_PASS,
+    }
 
 def get_requests_proxies():
-    if PROXY_USER and PROXY_PASS:
-        proxy_url = f"http://{_sticky_user()}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
-        return {"http": proxy_url, "https": proxy_url}
-    return None
+    proxy_url = f"http://{_sticky_user()}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+    return {"http": proxy_url, "https": proxy_url}
 
 
 async def extract_playlist_url(movie_url):
@@ -51,23 +52,20 @@ async def extract_playlist_url(movie_url):
     proxy = get_proxy_config()
 
     async with async_playwright() as p:
-        launch_args = {
-            "headless": True,
-            "args": [
+        print(f"[*] Proxy attivo: {proxy['server']} user={proxy['username']}")
+
+        browser = await p.chromium.launch(
+            executable_path=PLAYWRIGHT_EXEC,
+            headless=True,
+            proxy=proxy,
+            args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--single-process",
             ]
-        }
-        if proxy:
-            launch_args["proxy"] = proxy
-            print(f"[*] Proxy attivo: {proxy['server']} user={proxy['username']}")
-        else:
-            print("[!] Nessun proxy configurato")
-
-        browser = await p.chromium.launch(**launch_args)
+        )
         context = await browser.new_context(
             user_agent=USER_AGENT,
             viewport={"width": 1280, "height": 720},
@@ -168,6 +166,7 @@ def check_ip():
         from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser = await p.chromium.launch(
+                executable_path=PLAYWRIGHT_EXEC,
                 headless=True,
                 proxy=proxy,
                 args=["--no-sandbox", "--disable-setuid-sandbox",
@@ -180,8 +179,6 @@ def check_ip():
             return content
 
     result = asyncio.run(get_ip())
-
-    proxy = get_proxy_config()
     proxies = get_requests_proxies()
 
     try:
@@ -190,12 +187,13 @@ def check_ip():
     except Exception as e:
         requests_ip = f"errore: {e}"
 
+    proxy = get_proxy_config()
     return jsonify({
         "ip_playwright": result,
         "ip_requests_relay": requests_ip,
-        "proxy_attivo": proxy is not None,
-        "proxy_server": proxy["server"] if proxy else None,
-        "proxy_user": proxy["username"] if proxy else None,
+        "proxy_attivo": True,
+        "proxy_server": proxy["server"],
+        "proxy_user": proxy["username"],
         "session_id": PROXY_SESSION,
     })
 
