@@ -1,32 +1,40 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v5 - Con proxy residenziale Webshare
+VixSrc M3U8 Extractor v6 - Con proxy relay per streaming
 """
 
 import os
 import sys
 import asyncio
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
+import requests as req_lib
 
 app = Flask(__name__)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# === WEBSHARE CONFIG (legge da variabili d'ambiente su Render) ===
+# === WEBSHARE CONFIG ===
 PROXY_HOST = os.environ.get("WEBSHARE_HOST", "p.webshare.io")
 PROXY_PORT = os.environ.get("WEBSHARE_PORT", "80")
 PROXY_USER = os.environ.get("WEBSHARE_USER", "")
 PROXY_PASS = os.environ.get("WEBSHARE_PASS", "")
 
 def get_proxy_config():
-    """Restituisce la config proxy per Playwright, solo se le credenziali sono impostate"""
+    """Config proxy per Playwright"""
     if PROXY_USER and PROXY_PASS:
         return {
             "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
             "username": PROXY_USER,
             "password": PROXY_PASS,
         }
-    return None  # nessun proxy → utile per test locali
+    return None
+
+def get_requests_proxies():
+    """Config proxy per requests"""
+    if PROXY_USER and PROXY_PASS:
+        proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+        return {"http": proxy_url, "https": proxy_url}
+    return None
 
 
 async def extract_playlist_url(movie_url):
@@ -50,7 +58,7 @@ async def extract_playlist_url(movie_url):
             launch_args["proxy"] = proxy
             print(f"[*] Proxy attivo: {proxy['server']}")
         else:
-            print("[!] Nessun proxy configurato — IP datacenter")
+            print("[!] Nessun proxy configurato")
 
         browser = await p.chromium.launch(**launch_args)
         context = await browser.new_context(
@@ -91,7 +99,6 @@ async def extract_playlist_url(movie_url):
             print(f"[-] Timeout/errore goto: {e}")
             await asyncio.sleep(5)
 
-        # Estrazione da JS inline
         try:
             js_result = await page.evaluate("""
                 () => {
@@ -148,11 +155,9 @@ async def get_best_playlist(movie_url):
 
 @app.route('/check-ip')
 def check_ip():
-    import asyncio
-    from playwright.async_api import async_playwright
-
     async def get_ip():
         proxy = get_proxy_config()
+        from playwright.async_api import async_playwright
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
@@ -179,6 +184,57 @@ def check_ip():
     })
 
 
+@app.route('/proxy')
+def proxy_stream():
+    """
+    Relay trasparente: scarica il contenuto (m3u8 o segmenti ts)
+    usando lo stesso IP Webshare con cui è stato generato il token.
+    """
+    target_url = request.args.get('url')
+    if not target_url:
+        return jsonify({'error': 'url mancante'}), 400
+
+    proxies = get_requests_proxies()
+
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://vixsrc.to/",
+        "Origin": "https://vixsrc.to",
+    }
+
+    try:
+        r = req_lib.get(
+            target_url,
+            headers=headers,
+            proxies=proxies,
+            stream=True,
+            timeout=30
+        )
+
+        # Se è un file m3u8, riscriviamo gli URL interni per passare dal relay
+        content_type = r.headers.get('Content-Type', '')
+        if 'mpegurl' in content_type or target_url.endswith('.m3u8'):
+            content = r.text
+            # Riscrivi ogni URL assoluto http(s)://... → /proxy?url=...
+            import re
+            def rewrite(line):
+                line = line.strip()
+                if line.startswith('http://') or line.startswith('https://'):
+                    return f"/proxy?url={line}"
+                return line
+            rewritten = "\n".join(rewrite(l) for l in content.splitlines())
+            return Response(rewritten, content_type='application/vnd.apple.mpegurl')
+
+        # Altrimenti stream diretto (segmenti .ts, ecc.)
+        return Response(
+            stream_with_context(r.iter_content(chunk_size=65536)),
+            content_type=r.headers.get('Content-Type', 'application/octet-stream'),
+            status=r.status_code,
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -199,7 +255,10 @@ def api_extract():
         loop.close()
 
         if playlist_url:
-            return jsonify({'success': True, 'url': playlist_url})
+            # Restituisce l'URL proxato invece del link diretto
+            base = request.host_url.rstrip('/')
+            proxied_url = f"{base}/proxy?url={playlist_url}"
+            return jsonify({'success': True, 'url': proxied_url, 'original': playlist_url})
         else:
             return jsonify({'success': False, 'error': 'Nessun link playlist trovato.'})
     except Exception as e:
@@ -247,7 +306,7 @@ HTML_TEMPLATE = '''
         .copy-btn { background: #333; color: #fff; border: none; padding: 6px 14px;
                     border-radius: 4px; cursor: pointer; font-size: 0.85em; margin-left: 8px; }
         .copy-btn:hover { background: #444; }
-        .url-display { color: #666; font-size: 0.82em; margin-top: 10px; }
+        .note { color: #666; font-size: 0.82em; margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -267,10 +326,7 @@ HTML_TEMPLATE = '''
     <script>
         async function extract() {
             const url = document.getElementById('url-input').value.trim();
-            if (!url) {
-                showResult(false, 'Inserisci un URL valido');
-                return;
-            }
+            if (!url) { showResult(false, 'Inserisci un URL valido'); return; }
             document.getElementById('loader').classList.add('active');
             document.getElementById('result').className = 'result';
             try {
@@ -288,7 +344,7 @@ HTML_TEMPLATE = '''
                         '<span style="color:#888;">Copia e incolla in VLC (Ctrl+N):</span><br><br>' +
                         '<code id="playlisturl">' + data.url + '</code>' +
                         '<button class="copy-btn" onclick="copyUrl()">📋 Copia</button><br><br>' +
-                        '<span class="url-display">In VLC: Ctrl+N → incolla URL → Play</span>';
+                        '<span class="note">In VLC: Ctrl+N → incolla URL → Play</span>';
                 } else {
                     showResult(false, data.error);
                 }
