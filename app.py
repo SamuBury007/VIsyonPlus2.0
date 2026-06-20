@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v7 - Sticky session proxy
+VixSrc M3U8 Extractor v8
 """
 
 import os
@@ -21,16 +21,13 @@ PROXY_PORT = os.environ.get("WEBSHARE_PORT", "80")
 PROXY_USER = os.environ.get("WEBSHARE_USER", "")
 PROXY_PASS = os.environ.get("WEBSHARE_PASS", "")
 
-# Session ID fisso per tutta la durata del processo → stesso IP per Playwright e relay
 PROXY_SESSION = str(uuid.uuid4())[:8]
 
 def _sticky_user():
-    """Restituisce username con sticky session per Webshare"""
     base = PROXY_USER.replace("-rotate", "")
     return f"{base}-rotate-session-{PROXY_SESSION}"
 
 def get_proxy_config():
-    """Config proxy per Playwright"""
     if PROXY_USER and PROXY_PASS:
         return {
             "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
@@ -40,7 +37,6 @@ def get_proxy_config():
     return None
 
 def get_requests_proxies():
-    """Config proxy per requests"""
     if PROXY_USER and PROXY_PASS:
         proxy_url = f"http://{_sticky_user()}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
         return {"http": proxy_url, "https": proxy_url}
@@ -62,6 +58,7 @@ async def extract_playlist_url(movie_url):
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
+                "--single-process",
             ]
         }
         if proxy:
@@ -105,6 +102,7 @@ async def extract_playlist_url(movie_url):
                 await asyncio.sleep(1)
                 if playlist_urls:
                     print(f"   [+] Trovati {len(playlist_urls)} link")
+                    break
         except Exception as e:
             print(f"[-] Timeout/errore goto: {e}")
             await asyncio.sleep(5)
@@ -172,7 +170,8 @@ def check_ip():
             browser = await p.chromium.launch(
                 headless=True,
                 proxy=proxy,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                args=["--no-sandbox", "--disable-setuid-sandbox",
+                      "--disable-dev-shm-usage", "--disable-gpu", "--single-process"]
             )
             page = await browser.new_page()
             await page.goto("https://api.ipify.org?format=json")
@@ -180,14 +179,11 @@ def check_ip():
             await browser.close()
             return content
 
-    loop = asyncio.new_event_loop()
-    result = loop.run_until_complete(get_ip())
-    loop.close()
+    result = asyncio.run(get_ip())
 
     proxy = get_proxy_config()
     proxies = get_requests_proxies()
-    
-    # Controlla anche IP delle requests
+
     try:
         r = req_lib.get("https://api.ipify.org?format=json", proxies=proxies, timeout=10)
         requests_ip = r.text
@@ -206,10 +202,6 @@ def check_ip():
 
 @app.route('/proxy')
 def proxy_stream():
-    """
-    Relay trasparente: scarica il contenuto usando lo stesso IP
-    Webshare (sticky session) con cui è stato generato il token.
-    """
     target_url = request.args.get('url')
     if not target_url:
         return jsonify({'error': 'url mancante'}), 400
@@ -266,10 +258,7 @@ def api_extract():
         return jsonify({'success': False, 'error': 'URL richiesto'})
 
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        playlist_url = loop.run_until_complete(get_best_playlist(movie_url))
-        loop.close()
+        playlist_url = asyncio.run(get_best_playlist(movie_url))
 
         if playlist_url:
             base = request.host_url.rstrip('/')
@@ -334,7 +323,7 @@ HTML_TEMPLATE = '''
             <input type=text id="url-input" placeholder="https://vixsrc.to/movie/786892/" />
             <button class="main-btn" id="extract-btn">Estrai Link Playlist</button>
             <div class="loader" id="loader">
-                <span class="spinner"></span> Estrazione in corso (20-30 secondi)...
+                <span class="spinner"></span> Estrazione in corso (20-40 secondi)...
             </div>
             <div class="result" id="result"></div>
         </div>
@@ -364,6 +353,7 @@ HTML_TEMPLATE = '''
             var xhr = new XMLHttpRequest();
             xhr.open('POST', '/extract');
             xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.timeout = 90000;
             xhr.onload = function() {
                 document.getElementById('loader').className = 'loader';
                 var data = JSON.parse(xhr.responseText);
@@ -382,6 +372,10 @@ HTML_TEMPLATE = '''
             xhr.onerror = function() {
                 document.getElementById('loader').className = 'loader';
                 showResult(false, 'Errore di rete');
+            };
+            xhr.ontimeout = function() {
+                document.getElementById('loader').className = 'loader';
+                showResult(false, 'Timeout: il server ha impiegato troppo. Riprova.');
             };
             xhr.send(JSON.stringify({ url: url }));
         }
