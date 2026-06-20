@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-VixSrc M3U8 Extractor v6 - Con proxy relay per streaming
+VixSrc M3U8 Extractor v7 - Sticky session proxy
 """
 
 import os
 import sys
+import uuid
 import asyncio
 from urllib.parse import quote
 from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
@@ -20,12 +21,20 @@ PROXY_PORT = os.environ.get("WEBSHARE_PORT", "80")
 PROXY_USER = os.environ.get("WEBSHARE_USER", "")
 PROXY_PASS = os.environ.get("WEBSHARE_PASS", "")
 
+# Session ID fisso per tutta la durata del processo → stesso IP per Playwright e relay
+PROXY_SESSION = str(uuid.uuid4())[:8]
+
+def _sticky_user():
+    """Restituisce username con sticky session per Webshare"""
+    base = PROXY_USER.replace("-rotate", "")
+    return f"{base}-rotate-session-{PROXY_SESSION}"
+
 def get_proxy_config():
     """Config proxy per Playwright"""
     if PROXY_USER and PROXY_PASS:
         return {
             "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-            "username": PROXY_USER,
+            "username": _sticky_user(),
             "password": PROXY_PASS,
         }
     return None
@@ -33,7 +42,7 @@ def get_proxy_config():
 def get_requests_proxies():
     """Config proxy per requests"""
     if PROXY_USER and PROXY_PASS:
-        proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+        proxy_url = f"http://{_sticky_user()}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
         return {"http": proxy_url, "https": proxy_url}
     return None
 
@@ -57,7 +66,7 @@ async def extract_playlist_url(movie_url):
         }
         if proxy:
             launch_args["proxy"] = proxy
-            print(f"[*] Proxy attivo: {proxy['server']}")
+            print(f"[*] Proxy attivo: {proxy['server']} user={proxy['username']}")
         else:
             print("[!] Nessun proxy configurato")
 
@@ -176,20 +185,30 @@ def check_ip():
     loop.close()
 
     proxy = get_proxy_config()
+    proxies = get_requests_proxies()
+    
+    # Controlla anche IP delle requests
+    try:
+        r = req_lib.get("https://api.ipify.org?format=json", proxies=proxies, timeout=10)
+        requests_ip = r.text
+    except Exception as e:
+        requests_ip = f"errore: {e}"
+
     return jsonify({
-        "ip_visto_da_vixsrc": result,
+        "ip_playwright": result,
+        "ip_requests_relay": requests_ip,
         "proxy_attivo": proxy is not None,
         "proxy_server": proxy["server"] if proxy else None,
-        "WEBSHARE_USER_impostato": bool(PROXY_USER),
-        "WEBSHARE_PASS_impostato": bool(PROXY_PASS),
+        "proxy_user": proxy["username"] if proxy else None,
+        "session_id": PROXY_SESSION,
     })
 
 
 @app.route('/proxy')
 def proxy_stream():
     """
-    Relay trasparente: scarica il contenuto (m3u8 o segmenti ts)
-    usando lo stesso IP Webshare con cui è stato generato il token.
+    Relay trasparente: scarica il contenuto usando lo stesso IP
+    Webshare (sticky session) con cui è stato generato il token.
     """
     target_url = request.args.get('url')
     if not target_url:
@@ -212,21 +231,18 @@ def proxy_stream():
             timeout=30
         )
 
-        # Se è un file m3u8, riscriviamo gli URL interni per passare dal relay
         content_type = r.headers.get('Content-Type', '')
         if 'mpegurl' in content_type or target_url.endswith('.m3u8'):
             content = r.text
-            # Riscrivi ogni URL assoluto http(s)://... → /proxy?url=...
-            import re
+            base = request.host_url.rstrip('/')
             def rewrite(line):
                 line = line.strip()
                 if line.startswith('http://') or line.startswith('https://'):
-                    return f"/proxy?url={line}"
+                    return f"{base}/proxy?url={quote(line, safe='')}"
                 return line
             rewritten = "\n".join(rewrite(l) for l in content.splitlines())
             return Response(rewritten, content_type='application/vnd.apple.mpegurl')
 
-        # Altrimenti stream diretto (segmenti .ts, ecc.)
         return Response(
             stream_with_context(r.iter_content(chunk_size=65536)),
             content_type=r.headers.get('Content-Type', 'application/octet-stream'),
@@ -256,7 +272,6 @@ def api_extract():
         loop.close()
 
         if playlist_url:
-            # Restituisce l'URL proxato invece del link diretto
             base = request.host_url.rstrip('/')
             proxied_url = f"{base}/proxy?url={quote(playlist_url, safe='')}"
             return jsonify({'success': True, 'url': proxied_url, 'original': playlist_url})
@@ -279,7 +294,7 @@ HTML_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
         .container { max-width: 800px; margin: 50px auto; padding: 0 20px; }
         h1 { color: #00d4aa; font-size: 1.8em; margin-bottom: 6px; }
@@ -326,49 +341,49 @@ HTML_TEMPLATE = '''
     </div>
     <script>
         async function extract() {
-            const url = document.getElementById('url-input').value.trim();
-            if (!url) { showResult(false, 'Inserisci un URL valido'); return; }
-            document.getElementById('loader').classList.add('active');
-            document.getElementById('result').className = 'result';
+            const url = document.getElementById("url-input").value.trim();
+            if (!url) { showResult(false, "Inserisci un URL valido"); return; }
+            document.getElementById("loader").classList.add("active");
+            document.getElementById("result").className = "result";
             try {
-                const resp = await fetch('/extract', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                const resp = await fetch("/extract", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ url })
                 });
                 const data = await resp.json();
-                document.getElementById('loader').classList.remove('active');
+                document.getElementById("loader").classList.remove("active");
                 if (data.success) {
-                    document.getElementById('result').className = 'result success';
-                    document.getElementById('result').innerHTML =
-                        '<strong>✅ Playlist trovata!</strong><br><br>' +
-                        '<span style="color:#888;">Copia e incolla in VLC (Ctrl+N):</span><br><br>' +
-                        '<code id="playlisturl">' + data.url + '</code>' +
-                        '<button class="copy-btn" onclick="copyUrl()">📋 Copia</button><br><br>' +
-                        '<span class="note">In VLC: Ctrl+N → incolla URL → Play</span>';
+                    document.getElementById("result").className = "result success";
+                    document.getElementById("result").innerHTML =
+                        "<strong>✅ Playlist trovata!</strong><br><br>" +
+                        "<span style=\"color:#888;\">Copia e incolla in VLC (Ctrl+N):</span><br><br>" +
+                        "<code id=\"playlisturl\">" + data.url + "</code>" +
+                        "<button class=\"copy-btn\" onclick=\"copyUrl()\">📋 Copia</button><br><br>" +
+                        "<span class=\"note\">In VLC: Ctrl+N → incolla URL → Play</span>";
                 } else {
                     showResult(false, data.error);
                 }
             } catch (err) {
-                document.getElementById('loader').classList.remove('active');
+                document.getElementById("loader").classList.remove("active");
                 showResult(false, err.message);
             }
         }
         function showResult(success, msg) {
-            const el = document.getElementById('result');
-            el.className = 'result ' + (success ? 'success' : 'error');
+            const el = document.getElementById("result");
+            el.className = "result " + (success ? "success" : "error");
             el.innerHTML = msg;
         }
         function copyUrl() {
-            const url = document.getElementById('playlisturl').textContent;
+            const url = document.getElementById("playlisturl").textContent;
             navigator.clipboard.writeText(url).then(() => {
-                const btn = document.querySelector('.copy-btn');
-                btn.textContent = '✅ Copiato!';
-                setTimeout(() => btn.textContent = '📋 Copia', 2000);
+                const btn = document.querySelector(".copy-btn");
+                btn.textContent = "✅ Copiato!";
+                setTimeout(() => btn.textContent = "📋 Copia", 2000);
             });
         }
-        document.getElementById('url-input').addEventListener('keydown', e => {
-            if (e.key === 'Enter') extract();
+        document.getElementById("url-input").addEventListener("keydown", e => {
+            if (e.key === "Enter") extract();
         });
     </script>
 </body>
@@ -382,6 +397,7 @@ HTML_TEMPLATE = '''
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8080))
+    print(f"[*] Session ID proxy: {PROXY_SESSION}")
     if len(sys.argv) > 1:
         async def main():
             url = await get_best_playlist(sys.argv[1])
