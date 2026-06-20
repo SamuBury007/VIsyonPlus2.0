@@ -146,6 +146,39 @@ async def get_best_playlist(movie_url):
 # Flask Routes
 # ============================================================
 
+@app.route('/check-ip')
+def check_ip():
+    import asyncio
+    from playwright.async_api import async_playwright
+
+    async def get_ip():
+        proxy = get_proxy_config()
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+            )
+            page = await browser.new_page()
+            await page.goto("https://api.ipify.org?format=json")
+            content = await page.inner_text("body")
+            await browser.close()
+            return content
+
+    loop = asyncio.new_event_loop()
+    result = loop.run_until_complete(get_ip())
+    loop.close()
+
+    proxy = get_proxy_config()
+    return jsonify({
+        "ip_visto_da_vixsrc": result,
+        "proxy_attivo": proxy is not None,
+        "proxy_server": proxy["server"] if proxy else None,
+        "WEBSHARE_USER_impostato": bool(PROXY_USER),
+        "WEBSHARE_PASS_impostato": bool(PROXY_PASS),
+    })
+
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
