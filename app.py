@@ -6,6 +6,7 @@ VixSrc M3U8 Extractor v6 - Con proxy relay per streaming
 import os
 import sys
 import asyncio
+from urllib.parse import quote
 from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
 import requests as req_lib
 
@@ -257,7 +258,7 @@ def api_extract():
         if playlist_url:
             # Restituisce l'URL proxato invece del link diretto
             base = request.host_url.rstrip('/')
-            proxied_url = f"{base}/proxy?url={playlist_url}"
+            proxied_url = f"{base}/proxy?url={quote(playlist_url, safe='')}"
             return jsonify({'success': True, 'url': proxied_url, 'original': playlist_url})
         else:
             return jsonify({'success': False, 'error': 'Nessun link playlist trovato.'})
