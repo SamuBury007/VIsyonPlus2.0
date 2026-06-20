@@ -294,20 +294,20 @@ HTML_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                background: #0f0f0f; color: #e0e0e0; line-height: 1.6; }
         .container { max-width: 800px; margin: 50px auto; padding: 0 20px; }
         h1 { color: #00d4aa; font-size: 1.8em; margin-bottom: 6px; }
         .subtitle { color: #888; margin-bottom: 30px; }
         .card { background: #1a1a2e; border-radius: 12px; padding: 30px; border: 1px solid #2a2a4a; }
         label { display: block; margin-bottom: 8px; color: #aaa; font-size: 0.9em; }
-        input[type="text"] { width: 100%; padding: 12px 16px; background: #0f0f1a;
-                             border: 1px solid #333; border-radius: 8px; color: #fff;
-                             font-size: 1em; margin-bottom: 15px; }
-        input[type="text"]:focus { outline: none; border-color: #00d4aa; }
-        button.main-btn { background: #00d4aa; color: #000; border: none; padding: 12px 24px;
-                 border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer; }
-        button.main-btn:hover { background: #00f0c0; }
+        input[type=text] { width: 100%; padding: 12px 16px; background: #0f0f1a;
+                           border: 1px solid #333; border-radius: 8px; color: #fff;
+                           font-size: 1em; margin-bottom: 15px; }
+        input[type=text]:focus { outline: none; border-color: #00d4aa; }
+        .main-btn { background: #00d4aa; color: #000; border: none; padding: 12px 24px;
+                    border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer; }
+        .main-btn:hover { background: #00f0c0; }
         .result { margin-top: 20px; padding: 15px; background: #0f0f1a; border-radius: 8px;
                   border: 1px solid #2a2a4a; word-break: break-all; display: none; }
         .result.success { border-color: #00d4aa; display: block; }
@@ -316,8 +316,8 @@ HTML_TEMPLATE = '''
         .loader { display: none; margin: 15px 0; color: #888; }
         .loader.active { display: block; }
         .spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid #333;
-                    border-top: 3px solid #00d4aa; border-radius: 50%;
-                    animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+                   border-top: 3px solid #00d4aa; border-radius: 50%;
+                   animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .copy-btn { background: #333; color: #fff; border: none; padding: 6px 14px;
                     border-radius: 4px; cursor: pointer; font-size: 0.85em; margin-left: 8px; }
@@ -327,12 +327,12 @@ HTML_TEMPLATE = '''
 </head>
 <body>
     <div class="container">
-        <h1>🎬 VixSrc Playlist Extractor</h1>
+        <h1>VixSrc Playlist Extractor</h1>
         <p class="subtitle">Incolla il link del film, ottieni il link M3U8 da usare in VLC</p>
         <div class="card">
             <label for="url-input">URL del film su vixsrc.to</label>
-            <input type="text" id="url-input" placeholder="https://vixsrc.to/movie/786892/" />
-            <button class="main-btn" id="extract-btn">▶ Estrai Link Playlist</button>
+            <input type=text id="url-input" placeholder="https://vixsrc.to/movie/786892/" />
+            <button class="main-btn" id="extract-btn">Estrai Link Playlist</button>
             <div class="loader" id="loader">
                 <span class="spinner"></span> Estrazione in corso (20-30 secondi)...
             </div>
@@ -340,52 +340,56 @@ HTML_TEMPLATE = '''
         </div>
     </div>
     <script>
-        async function extract() {
-            const url = document.getElementById("url-input").value.trim();
-            if (!url) { showResult(false, "Inserisci un URL valido"); return; }
-            document.getElementById("loader").classList.add("active");
-            document.getElementById("result").className = "result";
-            try {
-                const resp = await fetch("/extract", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ url })
-                });
-                const data = await resp.json();
-                document.getElementById("loader").classList.remove("active");
-                if (data.success) {
-                    document.getElementById("result").className = "result success";
-                    document.getElementById("result").innerHTML =
-                        "<strong>✅ Playlist trovata!</strong><br><br>" +
-                        "<span style=\"color:#888;\">Copia e incolla in VLC (Ctrl+N):</span><br><br>" +
-                        "<code id=\"playlisturl\">" + data.url + "</code>" +
-                        "<button class=\"copy-btn\" onclick=\"copyUrl()\">📋 Copia</button><br><br>" +
-                        "<span class=\"note\">In VLC: Ctrl+N → incolla URL → Play</span>";
-                } else {
-                    showResult(false, data.error);
-                }
-            } catch (err) {
-                document.getElementById("loader").classList.remove("active");
-                showResult(false, err.message);
-            }
-        }
         function showResult(success, msg) {
-            const el = document.getElementById("result");
-            el.className = "result " + (success ? "success" : "error");
+            var el = document.getElementById('result');
+            el.className = 'result ' + (success ? 'success' : 'error');
             el.innerHTML = msg;
         }
+
         function copyUrl() {
-            const url = document.getElementById("playlisturl").textContent;
-            navigator.clipboard.writeText(url).then(() => {
-                const btn = document.querySelector(".copy-btn");
-                btn.textContent = "✅ Copiato!";
-                setTimeout(() => btn.textContent = "📋 Copia", 2000);
+            var url = document.getElementById('playlisturl').textContent;
+            navigator.clipboard.writeText(url).then(function() {
+                var btn = document.querySelector('.copy-btn');
+                btn.textContent = 'Copiato!';
+                setTimeout(function() { btn.textContent = 'Copia'; }, 2000);
             });
         }
-        document.getElementById("extract-btn").addEventListener("click", extract);
-        document.getElementById("url-input").addEventListener("keydown", e => {
-            if (e.key === "Enter") extract();
-        });
+
+        function extract() {
+            var url = document.getElementById('url-input').value.trim();
+            if (!url) { showResult(false, 'Inserisci un URL valido'); return; }
+            document.getElementById('loader').className = 'loader active';
+            document.getElementById('result').className = 'result';
+
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/extract');
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.onload = function() {
+                document.getElementById('loader').className = 'loader';
+                var data = JSON.parse(xhr.responseText);
+                if (data.success) {
+                    document.getElementById('result').className = 'result success';
+                    document.getElementById('result').innerHTML =
+                        '<strong>Playlist trovata!</strong><br><br>' +
+                        '<span style="color:#888">Copia e incolla in VLC (Ctrl+N):</span><br><br>' +
+                        '<code id="playlisturl">' + data.url + '</code>' +
+                        '<button class="copy-btn" onclick="copyUrl()">Copia</button><br><br>' +
+                        '<span class="note">In VLC: Ctrl+N > incolla URL > Play</span>';
+                } else {
+                    showResult(false, 'Errore: ' + data.error);
+                }
+            };
+            xhr.onerror = function() {
+                document.getElementById('loader').className = 'loader';
+                showResult(false, 'Errore di rete');
+            };
+            xhr.send(JSON.stringify({ url: url }));
+        }
+
+        document.getElementById('extract-btn').onclick = extract;
+        document.getElementById('url-input').onkeydown = function(e) {
+            if (e.key === 'Enter') extract();
+        };
     </script>
 </body>
 </html>
