@@ -332,7 +332,7 @@ HTML_TEMPLATE = '''
         <div class="card">
             <label for="url-input">URL del film su vixsrc.to</label>
             <input type="text" id="url-input" placeholder="https://vixsrc.to/movie/786892/" />
-            <button class="main-btn" onclick="extract()">▶ Estrai Link Playlist</button>
+            <button class="main-btn" id="extract-btn">▶ Estrai Link Playlist</button>
             <div class="loader" id="loader">
                 <span class="spinner"></span> Estrazione in corso (20-30 secondi)...
             </div>
@@ -382,6 +382,7 @@ HTML_TEMPLATE = '''
                 setTimeout(() => btn.textContent = "📋 Copia", 2000);
             });
         }
+        document.getElementById("extract-btn").addEventListener("click", extract);
         document.getElementById("url-input").addEventListener("keydown", e => {
             if (e.key === "Enter") extract();
         });
