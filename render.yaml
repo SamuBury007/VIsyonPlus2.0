@@ -16,4 +16,3 @@ services:
         sync: false   # inserisci manualmente nella dashboard Render
       - key: WEBSHARE_PASS
         sync: false   # inserisci manualmente nella dashboard Render
-      
